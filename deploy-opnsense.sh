@@ -25,14 +25,17 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# # Cleanup function
-# cleanup() {
-#     echo "Cleaning up network interfaces..."
-#     ip link del "$LAN_BRIDGE" 2>/dev/null || true
-#     ip link del macvtap0 2>/dev/null || true
-#     ip tuntap del tap0 mode tap 2>/dev/null || true
-# }
-# trap cleanup EXIT
+# Cleanup function
+cleanup() {
+    echo "Cleaning up network interfaces..."
+    ip link del "$LAN_BRIDGE" 2>/dev/null || true
+    ip link del macvtap0 2>/dev/null || true
+    ip tuntap del tap0 mode tap 2>/dev/null || true
+    iptables -t nat -D POSTROUTING -o "$WLAN_IF" -j MASQUERADE 2>/dev/null || true
+    iptables -D FORWARD -i "$LAN_BRIDGE" -o "$WLAN_IF" -j ACCEPT 2>/dev/null || true
+    iptables -D FORWARD -i "$WLAN_IF" -o "$LAN_BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
 
 # Check dependencies
 check_dependencies() {
@@ -73,8 +76,14 @@ verify_iso() {
     if [ ! -f "${IMG_PATH}" ]; then
         echo "Downloading OPNsense image..."
         mkdir -p "$IMG_DIR"
-        curl -fL -o "${IMG_PATH}.bz2" "$DOWNLOAD_URL"
-        bzip2 -d "${IMG_PATH}.bz2"
+        if ! curl -fL -o "${IMG_PATH}.bz2" "$DOWNLOAD_URL"; then
+            echo "Failed to download OPNsense image"
+            exit 1
+        fi
+        if ! bzip2 -d "${IMG_PATH}.bz2"; then
+            echo "Failed to extract OPNsense image"
+            exit 1
+        fi
     fi
 }
 
@@ -142,10 +151,18 @@ run_vm() {
 }
 
 # Route all traffic through the VM
+DEFAULT_ROUTE=$(ip route show default | awk '{print $3}')
+
 route_traffic() {
     ip route del default 2>/dev/null || true
     ip route add default via "${LAN_IP%.*}.2" dev "$LAN_BRIDGE"
 }
+
+# restore_route() {
+#     ip route del default 2>/dev/null || true
+#     [ -n "$DEFAULT_ROUTE" ] && ip route add default via "$DEFAULT_ROUTE"
+# }
+# trap restore_route EXIT
 
 # Main function
 main() {
