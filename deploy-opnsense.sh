@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -eo pipefail
 
 # Configuration
 OPNSENSE_VER="25.1"
@@ -36,43 +36,55 @@ fi
 
 # Check dependencies
 check_dependencies() {
-    # Check if QEMU/KVM is installed
-    if ! command -v qemu-system-x86_64 &> /dev/null; then
-        echo "Installing QEMU/KVM core packages..."
-        dnf install -y --setopt=install_weak_deps=FALSE qemu-kvm-core qemu-img
-
-        # Load KVM kernel modules
-        modprobe kvm kvm_intel 2>/dev/null || true
-
-        # Add user to kvm group
-        usermod -aG kvm "$SUDO_USER"
-        echo "Please logout/login or reboot to apply group changes and ensure KVM is ready!"
-        exit 1  # Exit to force user to re-login
+    echo "Checking dependencies..."
+    local missing=()
+    
+    ! command -v qemu-system-x86_64 &>/dev/null && missing+=("qemu-kvm-core")
+    ! command -v qemu-img &>/dev/null && missing+=("qemu-img")
+    ! command -v bzip2 &>/dev/null && missing+=("bzip2")
+    
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "Installing missing packages: ${missing[*]}..."
+        dnf install -y --setopt=install_weak_deps=FALSE "${missing[@]}"
     fi
 
-    # Verify /dev/kvm exists and is accessible
-    if [ ! -c /dev/kvm ]; then
-        echo "ERROR: /dev/kvm not found. Ensure KVM is enabled in BIOS and kernel modules are loaded."
+    # Load KVM kernel modules
+    if ! lsmod | grep -q kvm; then
+        if grep -q -E '(vmx|svm)' /proc/cpuinfo; then
+            modprobe kvm
+            [[ $(grep -c 'vendor_id.*Intel' /proc/cpuinfo) -gt 0 ]] && modprobe kvm_intel || modprobe kvm_amd
+        else
+            echo "ERROR: KVM extensions not found in CPU. Check virtualization settings in BIOS."
+            exit 1
+        fi
+    fi
+
+    # Verify KVM access
+    if [ ! -c /dev/kvm ] || [ ! -w /dev/kvm ]; then
+        echo "ERROR: /dev/kvm not accessible. Ensure KVM is enabled and permissions are set."
+        usermod -aG kvm "${SUDO_USER:-$USER}"
+        echo "User ${SUDO_USER:-$USER} added to kvm group. Please relogin and rerun the script."
         exit 1
     fi
 }
 
-# Verify and download OPNsense image if needed
+# Verify image file
 verify_iso() {
-    if [ ! -f "$IMG_PATH" ]; then
+    if [ ! -f "${IMG_PATH}" ]; then
         echo "Downloading OPNsense image..."
         mkdir -p "$IMG_DIR"
-        curl -o "${IMG_PATH}.bz2" "$DOWNLOAD_URL"
+        curl -fL -o "${IMG_PATH}.bz2" "$DOWNLOAD_URL"
         bzip2 -d "${IMG_PATH}.bz2"
     fi
 }
 
 # Create VM disk
 create_disk() {
-    if [ ! -f "$DISK_PATH" ]; then
-        echo "Creating VM disk at $DISK_PATH..."
+    if [ ! -f "${DISK_PATH}" ]; then
+        echo "Creating VM disk at ${DISK_PATH}..."
         mkdir -p "$IMG_DIR"
-        qemu-img create -f qcow2 "$DISK_PATH" "$DISK_SIZE"
+        qemu-img create -f qcow2 "${DISK_PATH}" "${DISK_SIZE}"
+        chown "${SUDO_USER:-$USER}:" "${DISK_PATH}"
     fi
 }
 
