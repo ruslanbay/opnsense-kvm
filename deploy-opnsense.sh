@@ -3,7 +3,7 @@ set -eo pipefail
 
 # Configuration
 OPNSENSE_VER="25.1"
-IMG_DIR="${HOME}/VMs/images"
+IMG_DIR="/home/${SUDO_USER}/VMs/images"
 IMG_FILENAME="OPNsense-${OPNSENSE_VER}-serial-amd64.img"
 IMG_PATH="${IMG_DIR}/${IMG_FILENAME}"
 VM_NAME="opnsense"
